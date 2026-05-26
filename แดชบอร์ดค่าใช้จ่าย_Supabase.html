@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>แดชบอร์ดสรุปค่าใช้จ่าย & วางแผนค่าเทอม คุณจิ๊บ</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: #f1f5f9; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useMemo, useEffect, useRef } = React;
+
+    // ======================================================
+    //  SUPABASE CONFIG
+    // ======================================================
+    const SUPABASE_URL = 'https://tgpvramkoxqbvcozrlrg.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRncHZyYW1rb3hxYnZjb3pybHJnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NTkwOTcsImV4cCI6MjA5NTMzNTA5N30.5qUIuGPc-1XsVdYLj-mXKW7ja_jncfEucqCHEvC9orE';
+    const TABLE_NAME   = 'dashboard_data';
+    const ROW_KEY      = 'jiib_v1';
+
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    // ======================================================
+    //  DEFAULT DATA
+    // ======================================================
+    const DEFAULT_DATA = {
+      grossSalary: 37000,
+      netSalary: 33400,
+      monthlyExpenses: [
+        { id: 1, name: 'ที่บ้าน ไฟ เน็ต', amount: 3000 },
+        { id: 2, name: 'น้ำมันรถยนต์',    amount: 3000 },
+        { id: 3, name: 'โทรศัพท์',         amount: 1200 },
+      ],
+      schoolName: 'โรงเรียนบีคอนเฮาส์แย้มสะอาด',
+      tuitionPerTerm: 72750,
+      busPerTerm: 13000,
+      termsPerYear: 2,
+      subsidies: [
+        { id: 1, name: 'BTS ช่วย',    amount: 10000 },
+        { id: 2, name: 'พี่ผึ้ง ช่วย', amount: 10000 },
+      ],
+      selectedSaving: 15000,
+      scenarios: [15000, 18000, 20000],
+    };
+
+    // ======================================================
+    //  APP
+    // ======================================================
+    function App() {
+      const [loading,    setLoading]    = useState(true);
+      const [syncStatus, setSyncStatus] = useState('idle'); // idle | saving | saved | error
+      const [dbReady,    setDbReady]    = useState(true);
+
+      const [grossSalary,      setGrossSalary]      = useState(DEFAULT_DATA.grossSalary);
+      const [netSalary,        setNetSalary]        = useState(DEFAULT_DATA.netSalary);
+      const [monthlyExpenses,  setMonthlyExpenses]  = useState(DEFAULT_DATA.monthlyExpenses);
+      const [schoolName,       setSchoolName]       = useState(DEFAULT_DATA.schoolName);
+      const [tuitionPerTerm,   setTuitionPerTerm]   = useState(DEFAULT_DATA.tuitionPerTerm);
+      const [busPerTerm,       setBusPerTerm]       = useState(DEFAULT_DATA.busPerTerm);
+      const [termsPerYear,     setTermsPerYear]     = useState(DEFAULT_DATA.termsPerYear);
+      const [subsidies,        setSubsidies]        = useState(DEFAULT_DATA.subsidies);
+      const [selectedSaving,   setSelectedSaving]   = useState(DEFAULT_DATA.selectedSaving);
+      const [scenarios,        setScenarios]        = useState(DEFAULT_DATA.scenarios);
+
+      const [newExpenseName,   setNewExpenseName]   = useState('');
+      const [newExpenseAmount, setNewExpenseAmount] = useState('');
+      const [newSubsidyName,   setNewSubsidyName]   = useState('');
+      const [newSubsidyAmount, setNewSubsidyAmount] = useState('');
+      const [newScenarioAmount,setNewScenarioAmount]= useState('');
+      const [toastMessage,     setToastMessage]     = useState('');
+
+      const saveTimer = useRef(null);
+
+      // ---- โหลดข้อมูลจาก Supabase ----
+      useEffect(() => {
+        async function load() {
+          try {
+            const { data, error } = await supabase
+              .from(TABLE_NAME)
+              .select('data')
+              .eq('key', ROW_KEY)
+              .single();
+
+            if (error && error.code !== 'PGRST116') {
+              // ตาราง/row ยังไม่มี → ลองสร้าง
+              await ensureTable();
+            } else if (data && data.data) {
+              applyData(data.data);
+            }
+          } catch (e) {
+            setDbReady(false);
+          }
+          setLoading(false);
+        }
+        load();
+      }, []);
+
+      async function ensureTable() {
+        // พยายาม upsert ค่า default เพื่อสร้าง row ครั้งแรก
+        try {
+          await supabase.from(TABLE_NAME).upsert({ key: ROW_KEY, data: DEFAULT_DATA });
+          setDbReady(true);
+        } catch {
+          setDbReady(false);
+        }
+      }
+
+      function applyData(d) {
+        if (d.grossSalary     !== undefined) setGrossSalary(d.grossSalary);
+        if (d.netSalary       !== undefined) setNetSalary(d.netSalary);
+        if (d.monthlyExpenses)               setMonthlyExpenses(d.monthlyExpenses);
+        if (d.schoolName)                    setSchoolName(d.schoolName);
+        if (d.tuitionPerTerm  !== undefined) setTuitionPerTerm(d.tuitionPerTerm);
+        if (d.busPerTerm      !== undefined) setBusPerTerm(d.busPerTerm);
+        if (d.termsPerYear    !== undefined) setTermsPerYear(d.termsPerYear);
+        if (d.subsidies)                     setSubsidies(d.subsidies);
+        if (d.selectedSaving  !== undefined) setSelectedSaving(d.selectedSaving);
+        if (d.scenarios)                     setScenarios(d.scenarios);
+      }
+
+      // ---- บันทึกขึ้น Supabase อัตโนมัติ (debounce 1 วิ) ----
+      useEffect(() => {
+        if (loading) return;
+        clearTimeout(saveTimer.current);
+        setSyncStatus('saving');
+        saveTimer.current = setTimeout(async () => {
+          const payload = {
+            grossSalary, netSalary, monthlyExpenses, schoolName,
+            tuitionPerTerm, busPerTerm, termsPerYear,
+            subsidies, selectedSaving, scenarios,
+          };
+          try {
+            const { error } = await supabase
+              .from(TABLE_NAME)
+              .upsert({ key: ROW_KEY, data: payload });
+            if (error) throw error;
+            setSyncStatus('saved');
+            setTimeout(() => setSyncStatus('idle'), 2500);
+          } catch {
+            setSyncStatus('error');
+            setTimeout(() => setSyncStatus('idle'), 3000);
+          }
+        }, 1000);
+        return () => clearTimeout(saveTimer.current);
+      }, [grossSalary, netSalary, monthlyExpenses, schoolName,
+          tuitionPerTerm, busPerTerm, termsPerYear,
+          subsidies, selectedSaving, scenarios, loading]);
+
+      const showToast = (msg) => {
+        setToastMessage(msg);
+        setTimeout(() => setToastMessage(''), 3000);
+      };
+
+      const handleAddExpense = (e) => {
+        e.preventDefault();
+        if (!newExpenseName || !newExpenseAmount) return;
+        const amount = parseFloat(newExpenseAmount);
+        if (isNaN(amount) || amount < 0) return;
+        setMonthlyExpenses([...monthlyExpenses, { id: Date.now(), name: newExpenseName, amount }]);
+        setNewExpenseName(''); setNewExpenseAmount('');
+        showToast('เพิ่มค่าใช้จ่ายรายเดือนเรียบร้อยแล้ว');
+      };
+
+      const handleDeleteExpense = (id) => {
+        setMonthlyExpenses(monthlyExpenses.filter(i => i.id !== id));
+        showToast('ลบรายการค่าใช้จ่ายแล้ว');
+      };
+
+      const handleAddSubsidy = (e) => {
+        e.preventDefault();
+        if (!newSubsidyName || !newSubsidyAmount) return;
+        const amount = parseFloat(newSubsidyAmount);
+        if (isNaN(amount) || amount < 0) return;
+        setSubsidies([...subsidies, { id: Date.now(), name: newSubsidyName, amount }]);
+        setNewSubsidyName(''); setNewSubsidyAmount('');
+        showToast('เพิ่มเงินช่วยเหลือเรียนเรียบร้อยแล้ว');
+      };
+
+      const handleDeleteSubsidy = (id) => {
+        setSubsidies(subsidies.filter(i => i.id !== id));
+        showToast('ลบรายการเงินช่วยเหลือแล้ว');
+      };
+
+      const handleAddScenario = (e) => {
+        e.preventDefault();
+        if (!newScenarioAmount) return;
+        const amount = parseInt(newScenarioAmount);
+        if (isNaN(amount) || amount <= 0) return;
+        if (scenarios.includes(amount)) { showToast('มีตัวเลือกเก็บออมจำนวนนี้อยู่แล้ว'); return; }
+        const updated = [...scenarios, amount].sort((a, b) => a - b);
+        setScenarios(updated); setSelectedSaving(amount); setNewScenarioAmount('');
+        showToast(`เพิ่มแผนการออมเดือนละ ${amount.toLocaleString()} บาท`);
+      };
+
+      const handleDeleteScenario = (val) => {
+        if (scenarios.length <= 1) { showToast('ต้องมีตัวเลือกการออมอย่างน้อย 1 แผน'); return; }
+        const updated = scenarios.filter(s => s !== val);
+        setScenarios(updated);
+        if (selectedSaving === val) setSelectedSaving(updated[0]);
+        showToast('ลบตัวเลือกการออมแล้ว');
+      };
+
+      const handleReset = async () => {
+        const d = DEFAULT_DATA;
+        setGrossSalary(d.grossSalary); setNetSalary(d.netSalary);
+        setMonthlyExpenses(d.monthlyExpenses); setSchoolName(d.schoolName);
+        setTuitionPerTerm(d.tuitionPerTerm); setBusPerTerm(d.busPerTerm);
+        setTermsPerYear(d.termsPerYear); setSubsidies(d.subsidies);
+        setSelectedSaving(d.selectedSaving); setScenarios(d.scenarios);
+        showToast('รีเซ็ตข้อมูลทั้งหมดกลับสู่ค่าเริ่มต้นแล้ว');
+      };
+
+      const copyToClipboard = () => {
+        const text = `=== สรุปแผนการเงินคุณจิ๊บ ===
+เงินเดือนสุทธิ: ${netSalary.toLocaleString()} บาท
+ค่าใช้จ่ายรายเดือนส่วนตัว: ${totalMonthlyExpenses.toLocaleString()} บาท
+
+สถาบันการศึกษา: ${schoolName}
+- ค่าเทอมสุทธิที่ต้องจ่ายต่อปี: ${netTuitionYearly.toLocaleString()} บาท
+
+แผนการออม: เดือนละ ${selectedSaving.toLocaleString()} บาท
+- ยอดออมต่อปี: ${annualSavings.toLocaleString()} บาท
+- สถานะ: ${isTuitionCovered ? 'ครอบคลุมค่าเทอมปีนี้' : 'ยังไม่ครอบคลุม'}
+- เงินเหลือใช้ต่อเดือน: ${remainingMonthlySpending.toLocaleString()} บาท`;
+        const el = document.createElement('textarea');
+        el.value = text;
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+        showToast('คัดลอกรายงานไปยังคลิปบอร์ดแล้ว!');
+      };
+
+      // ---- CALCULATIONS ----
+      const totalMonthlyExpenses    = useMemo(() => monthlyExpenses.reduce((s, i) => s + i.amount, 0), [monthlyExpenses]);
+      const totalSchoolExpensesYearly = useMemo(() => (tuitionPerTerm + busPerTerm) * termsPerYear, [tuitionPerTerm, busPerTerm, termsPerYear]);
+      const totalSubsidiesYearly    = useMemo(() => subsidies.reduce((s, i) => s + i.amount, 0), [subsidies]);
+      const netTuitionYearly        = useMemo(() => Math.max(0, totalSchoolExpensesYearly - totalSubsidiesYearly), [totalSchoolExpensesYearly, totalSubsidiesYearly]);
+      const netTuitionMonthlyRequired = useMemo(() => Math.round((netTuitionYearly / 12) * 100) / 100, [netTuitionYearly]);
+      const annualSavings           = selectedSaving * 12;
+      const isTuitionCovered        = annualSavings >= netTuitionYearly;
+      const annualTuitionSurplus    = annualSavings - netTuitionYearly;
+      const remainingMonthlySpending = netSalary - totalMonthlyExpenses - selectedSaving;
+
+      const syncBadge = {
+        saving: { cls: 'bg-yellow-500/20 text-yellow-200 border-yellow-400/30', label: '⏳ กำลังบันทึก...' },
+        saved:  { cls: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/30', label: '☁️ บันทึกแล้ว' },
+        error:  { cls: 'bg-rose-500/20 text-rose-200 border-rose-400/30', label: '❌ บันทึกไม่ได้' },
+        idle:   { cls: 'bg-slate-500/20 text-slate-300 border-slate-400/20', label: '☁️ Supabase Sync' },
+      }[syncStatus];
+
+      // ---- LOADING SCREEN ----
+      if (loading) return (
+        <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 space-y-4">
+          <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-slate-500 text-sm font-medium">กำลังโหลดข้อมูลจาก Supabase Cloud...</p>
+        </div>
+      );
+
+      // ---- DB ERROR BANNER ----
+      const DbError = !dbReady && (
+        <div className="bg-rose-50 border-l-4 border-rose-500 p-4 mb-6 rounded-r-xl text-rose-800 text-sm">
+          <strong>⚠️ เชื่อมต่อ Supabase ไม่ได้</strong> — ต้องสร้างตาราง <code className="bg-rose-100 px-1 rounded">dashboard_data</code> ก่อน (ดูขั้นตอนด้านล่าง)
+          <details className="mt-2 text-xs">
+            <summary className="cursor-pointer font-semibold">วิธีสร้างตาราง (คลิกเพื่อดู)</summary>
+            <pre className="bg-rose-100 p-2 rounded mt-1 overflow-x-auto">{`create table dashboard_data (
+  key text primary key,
+  data jsonb
+);
+alter table dashboard_data enable row level security;
+create policy "allow all" on dashboard_data for all using (true);`}</pre>
+          </details>
+        </div>
+      );
+
+      return (
+        <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
+          {/* Toast */}
+          {toastMessage && (
+            <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white px-5 py-3 rounded-xl shadow-2xl flex items-center space-x-2 border border-slate-700">
+              <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span className="text-sm font-medium">{toastMessage}</span>
+            </div>
+          )}
+
+          {/* Header */}
+          <header className="bg-gradient-to-r from-emerald-600 via-teal-700 to-indigo-800 text-white shadow-lg">
+            <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <span className="bg-emerald-500/30 text-emerald-300 text-xs font-semibold px-2.5 py-1 rounded-full uppercase tracking-wider border border-emerald-400/20">วางแผนการเงินส่วนบุคคล</span>
+                    <span className="bg-indigo-500/30 text-indigo-200 text-xs font-semibold px-2.5 py-1 rounded-full uppercase tracking-wider border border-indigo-400/20">สำหรับบุตรหลาน</span>
+                    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${syncBadge.cls}`}>{syncBadge.label}</span>
+                  </div>
+                  <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight flex items-center gap-2">
+                    💰 แดชบอร์ดสรุปค่าใช้จ่าย & วางแผนค่าเทอม คุณจิ๊บ
+                  </h1>
+                  <p className="text-emerald-100 text-xs sm:text-sm mt-1 max-w-2xl">
+                    วางจำลองแผนการออมเงินเพื่อคลุมค่าใช้จ่ายโรงเรียน <strong className="underline decoration-wavy decoration-emerald-300">{schoolName}</strong> ของบุตรหลานแบบเรียลไทม์
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={copyToClipboard} className="inline-flex items-center px-4 py-2 bg-emerald-500 hover:bg-emerald-400 active:scale-95 transition-all rounded-xl text-sm font-bold shadow-md text-white">
+                    <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+                    ก๊อปปี้รายงานสรุป
+                  </button>
+                  <button onClick={handleReset} className="inline-flex items-center px-4 py-2 bg-slate-700/60 hover:bg-slate-700 active:scale-95 transition-all rounded-xl text-sm font-bold border border-slate-600 text-white">
+                    <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                    รีเซ็ตค่าเริ่มต้น
+                  </button>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+            {DbError}
+
+            {/* Summary Cards */}
+            <section className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+              <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200/80 flex items-center justify-between">
+                <div className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wider block opacity-60">เงินเดือนสุทธิ</span>
+                  <span className="text-2xl sm:text-3xl font-black text-emerald-700">฿{netSalary.toLocaleString()}</span>
+                  <span className="text-xs block opacity-60">Gross ฿{grossSalary.toLocaleString()}</span>
+                </div>
+                <div className="p-3.5 bg-emerald-50 rounded-xl text-emerald-600">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                </div>
+              </div>
+              <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200/80 flex items-center justify-between">
+                <div className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wider block opacity-60">ค่าใช้จ่ายส่วนตัว/เดือน</span>
+                  <span className="text-2xl sm:text-3xl font-black text-rose-600">฿{totalMonthlyExpenses.toLocaleString()}</span>
+                  <span className="text-xs block opacity-60">{monthlyExpenses.length} รายการ</span>
+                </div>
+                <div className="p-3.5 bg-rose-50 rounded-xl text-rose-600">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                </div>
+              </div>
+              <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200/80 flex items-center justify-between">
+                <div className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wider block opacity-60">ค่าเทอมสุทธิต่อปี</span>
+                  <span className="text-2xl sm:text-3xl font-black text-indigo-700">฿{netTuitionYearly.toLocaleString()}</span>
+                  <span className="text-xs text-indigo-500 block font-medium">เฉลี่ยเดือนละ ฿{Math.round(netTuitionMonthlyRequired).toLocaleString()}</span>
+                </div>
+                <div className="p-3.5 bg-indigo-50 rounded-xl text-indigo-600">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+                </div>
+              </div>
+              <div className={`rounded-2xl p-5 shadow-sm border flex items-center justify-between ${remainingMonthlySpending >= 10000 ? 'bg-emerald-50/60 border-emerald-200' : remainingMonthlySpending > 0 ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
+                <div className="space-y-1">
+                  <span className="text-xs font-semibold uppercase tracking-wider block opacity-70">เงินเหลือใช้สุทธิ/เดือน</span>
+                  <span className={`text-2xl sm:text-3xl font-black ${remainingMonthlySpending > 0 ? 'text-slate-900' : 'text-rose-700'}`}>฿{remainingMonthlySpending.toLocaleString()}</span>
+                  <span className="text-xs block opacity-80">หักจ่ายส่วนตัวและออมค่าเทอมแล้ว</span>
+                </div>
+                <div className={`p-3.5 rounded-xl ${remainingMonthlySpending >= 10000 ? 'bg-emerald-500 text-white' : remainingMonthlySpending > 0 ? 'bg-amber-500 text-white' : 'bg-rose-600 text-white'}`}>
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={remainingMonthlySpending >= 10000 ? "M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" : "M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"} /></svg>
+                </div>
+              </div>
+            </section>
+
+            {remainingMonthlySpending < 5000 && (
+              <div className="mb-6 bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-xl shadow-sm text-amber-900 flex items-start space-x-3">
+                <svg className="w-6 h-6 text-amber-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                <div>
+                  <p className="font-bold text-sm">ข้อสังเกต: ยอดเงินเหลือค่อนข้างตึงตัว ({remainingMonthlySpending.toLocaleString()} บ.)</p>
+                  <p className="text-xs text-amber-800 mt-0.5">แนะนำให้พิจารณาปรับแผนเงินช่วยเหลือ หรือลดสัดส่วนค่าใช้จ่ายรายเดือนลง</p>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* LEFT */}
+              <div className="lg:col-span-5 space-y-6">
+                {/* Panel 1: Income */}
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5">
+                  <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2 border-b border-slate-100 pb-3 mb-4"><span className="text-emerald-500">💵</span><span>ปรับแก้ยอดเงินเดือน</span></h2>
+                  <div className="space-y-4">
+                    <div>
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="text-sm font-semibold text-slate-700">เงินเดือนสุทธิ (หักประกันสังคม/ภาษีแล้ว)</label>
+                        <span className="text-xs text-emerald-600 bg-emerald-50 font-bold px-2 py-0.5 rounded-full">ใช้งานจริง</span>
+                      </div>
+                      <div className="relative rounded-xl shadow-sm mb-2">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><span className="text-slate-500 text-sm">฿</span></div>
+                        <input type="number" value={netSalary} onChange={(e) => setNetSalary(Math.max(0, parseInt(e.target.value)||0))} className="focus:ring-emerald-500 focus:border-emerald-500 block w-full pl-8 pr-12 sm:text-sm border-slate-300 rounded-xl py-2" />
+                        <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none"><span className="text-slate-500 text-sm">บาท</span></div>
+                      </div>
+                      <input type="range" min="10000" max="100000" step="500" value={netSalary} onChange={(e) => setNetSalary(parseInt(e.target.value))} className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 block mb-1">เงินเดือนก่อนหัก (Gross)</label>
+                      <div className="relative rounded-xl shadow-sm">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><span className="text-slate-400 text-sm">฿</span></div>
+                        <input type="number" value={grossSalary} onChange={(e) => setGrossSalary(Math.max(0, parseInt(e.target.value)||0))} className="block w-full pl-8 pr-12 text-xs border-slate-300 rounded-xl py-1.5 text-slate-500 bg-slate-50" />
+                        <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none"><span className="text-slate-400 text-sm">บาท</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Panel 2: Monthly Expenses */}
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5">
+                  <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2 border-b border-slate-100 pb-3 mb-3"><span className="text-rose-500">🛍️</span><span>รายการค่าใช้จ่ายรายเดือนส่วนตัว</span></h2>
+                  <div className="max-h-[220px] overflow-y-auto pr-1 space-y-2 mb-4 scrollbar-thin">
+                    {monthlyExpenses.map(item => (
+                      <div key={item.id} className="flex justify-between items-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200/40">
+                        <div><span className="text-sm font-semibold text-slate-700 block">{item.name}</span><span className="text-xs text-slate-400">รายเดือน</span></div>
+                        <div className="flex items-center space-x-3">
+                          <span className="text-sm font-bold text-slate-900">฿{item.amount.toLocaleString()}</span>
+                          <button onClick={() => handleDeleteExpense(item.id)} className="text-slate-400 hover:text-rose-600 p-1 rounded-full hover:bg-rose-50">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {monthlyExpenses.length === 0 && <div className="text-center py-6 text-slate-400 text-xs">ไม่มีรายการค่าใช้จ่าย</div>}
+                  </div>
+                  <form onSubmit={handleAddExpense} className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/60">
+                    <p className="text-xs font-semibold text-slate-600 mb-2">➕ เพิ่มค่าใช้จ่ายรายเดือน</p>
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <input type="text" required placeholder="เช่น ค่าอาหาร" value={newExpenseName} onChange={(e) => setNewExpenseName(e.target.value)} className="block w-full border-slate-300 rounded-lg text-xs" />
+                      <input type="number" required min="0" placeholder="จำนวน (บาท)" value={newExpenseAmount} onChange={(e) => setNewExpenseAmount(e.target.value)} className="block w-full border-slate-300 rounded-lg text-xs" />
+                    </div>
+                    <button type="submit" className="w-full bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold py-1.5 rounded-lg">บันทึก</button>
+                  </form>
+                </div>
+
+                {/* Panel 3: School */}
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5">
+                  <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2 border-b border-slate-100 pb-3 mb-4"><span className="text-indigo-600">🎓</span><span>ปรับค่าเทอม & เงินช่วยเหลือ</span></h2>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 block mb-1">ชื่อสถาบันการศึกษา</label>
+                      <input type="text" value={schoolName} onChange={(e) => setSchoolName(e.target.value)} className="block w-full border-slate-300 rounded-xl text-sm py-1.5" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-semibold text-slate-500 block mb-1">ค่าเรียน / เทอม</label>
+                        <input type="number" value={tuitionPerTerm} onChange={(e) => setTuitionPerTerm(Math.max(0,parseFloat(e.target.value)||0))} className="block w-full border-slate-300 rounded-xl text-xs py-1.5" />
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-slate-500 block mb-1">ค่ารถรับ-ส่ง / เทอม</label>
+                        <input type="number" value={busPerTerm} onChange={(e) => setBusPerTerm(Math.max(0,parseFloat(e.target.value)||0))} className="block w-full border-slate-300 rounded-xl text-xs py-1.5" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 block mb-1">จำนวนเทอมต่อปี</label>
+                      <select value={termsPerYear} onChange={(e) => setTermsPerYear(parseInt(e.target.value))} className="block w-full border-slate-300 rounded-xl text-xs py-1.5">
+                        <option value={1}>1 เทอม / ปี</option>
+                        <option value={2}>2 เทอม / ปี</option>
+                        <option value={3}>3 เทอม / ปี</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 block mb-2">เงินช่วยเหลือค่าเทอม (รายปี) — รวม ฿{totalSubsidiesYearly.toLocaleString()}</label>
+                      <div className="space-y-1.5 mb-2 max-h-32 overflow-y-auto scrollbar-thin">
+                        {subsidies.map(sub => (
+                          <div key={sub.id} className="flex items-center justify-between bg-indigo-50/50 border border-indigo-100/60 rounded-lg px-2.5 py-1.5">
+                            <span className="text-xs font-semibold text-indigo-700">{sub.name}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-indigo-900">฿{sub.amount.toLocaleString()}/ปี</span>
+                              <button onClick={() => handleDeleteSubsidy(sub.id)} type="button" className="text-slate-400 hover:text-rose-600">
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        {subsidies.length === 0 && <span className="text-slate-400 text-[11px] block italic text-center py-2">ไม่มีเงินช่วยเหลือ</span>}
+                      </div>
+                      <form onSubmit={handleAddSubsidy} className="bg-indigo-50/20 p-2.5 rounded-xl border border-indigo-100/50">
+                        <div className="grid grid-cols-2 gap-1.5 mb-1.5">
+                          <input type="text" required placeholder="เช่น คุณปู่ช่วย" value={newSubsidyName} onChange={(e) => setNewSubsidyName(e.target.value)} className="block w-full border-slate-200 rounded-lg text-[11px] py-1" />
+                          <input type="number" required min="0" placeholder="บาท/ปี" value={newSubsidyAmount} onChange={(e) => setNewSubsidyAmount(e.target.value)} className="block w-full border-slate-200 rounded-lg text-[11px] py-1" />
+                        </div>
+                        <button type="submit" className="w-full bg-indigo-700 hover:bg-indigo-600 text-white text-[11px] font-bold py-1 rounded">เพิ่มเงินช่วยเหลือ</button>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* RIGHT */}
+              <div className="lg:col-span-7 space-y-6">
+                {/* Panel 4: Simulator */}
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-3 mb-4 gap-2">
+                    <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2"><span className="text-indigo-600">🎯</span><span>แบบจำลองทางเลือกออมเงินรายเดือน</span></h2>
+                    <span className="text-xs text-slate-400 italic">เลือกเพื่อดูการคำนวณ</span>
+                  </div>
+                  <div className="mb-5">
+                    <label className="text-xs font-semibold text-slate-500 block mb-2">เลือกแผนที่ต้องการประเมิน:</label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      {scenarios.map(val => {
+                        const isSelected = selectedSaving === val;
+                        return (
+                          <div key={val} className={`relative group rounded-xl p-3 border transition-all text-center cursor-pointer flex flex-col justify-center items-center ${isSelected ? 'bg-emerald-600 text-white border-emerald-600 shadow-md scale-[1.02]' : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200'}`} onClick={() => setSelectedSaving(val)}>
+                            <span className={`text-[10px] uppercase font-bold tracking-wider ${isSelected ? 'text-emerald-100' : 'text-slate-400'}`}>ออมเดือนละ</span>
+                            <span className="text-lg font-extrabold block mt-0.5">฿{val.toLocaleString()}</span>
+                            <span className={`text-[9px] block ${isSelected ? 'text-emerald-200' : 'text-slate-500'}`}>({(val*12).toLocaleString()} / ปี)</span>
+                            <button onClick={(e) => { e.stopPropagation(); handleDeleteScenario(val); }} className="absolute -top-1.5 -right-1.5 hidden group-hover:block bg-rose-600 text-white rounded-full p-0.5">
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                          </div>
+                        );
+                      })}
+                      <form onSubmit={handleAddScenario} className="flex flex-col justify-center">
+                        <input type="number" placeholder="เพิ่มแผน..." value={newScenarioAmount} onChange={(e) => setNewScenarioAmount(e.target.value)} className="w-full text-center text-xs font-bold border-dashed border-slate-300 hover:border-slate-400 rounded-xl py-4" />
+                      </form>
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/50 mb-5">
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-xs font-bold text-slate-600">ปรับสัดส่วนการออมอย่างละเอียด:</span>
+                      <span className="text-sm font-extrabold text-indigo-700">฿{selectedSaving.toLocaleString()}</span>
+                    </div>
+                    <input type="range" min="5000" max="25000" step="500" value={selectedSaving} onChange={(e) => setSelectedSaving(parseInt(e.target.value))} className="w-full h-2.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
+                    <div className="flex justify-between text-[10px] text-slate-400 font-medium mt-1">
+                      <span>฿5,000</span><span>฿10,000</span><span>฿15,000</span><span>฿20,000</span><span>฿25,000</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className={`p-4 rounded-2xl border ${isTuitionCovered ? 'bg-emerald-50/50 border-emerald-200/80' : 'bg-rose-50/50 border-rose-200/80'}`}>
+                      <h3 className="text-xs font-bold uppercase tracking-wider opacity-85 flex items-center gap-1.5">
+                        {isTuitionCovered ? <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block animate-ping" /> : <span className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />}
+                        สถานะแผนการออมค่าเทอม
+                      </h3>
+                      <span className="text-lg font-black block mt-2">{isTuitionCovered ? '✅ ออมครอบคลุมค่าเรียนแล้ว' : '❌ เงินออมยังไม่ครอบคลุม'}</span>
+                      <p className="text-xs opacity-90 mt-1">ออมได้ <strong>฿{annualSavings.toLocaleString()}</strong> ต่อปี ({isTuitionCovered ? 'เกินกว่า' : 'ขาดอีก'} ฿{netTuitionYearly.toLocaleString()})</p>
+                      <div className="pt-2 text-xs font-semibold border-t border-slate-200/40 mt-1">
+                        {isTuitionCovered ? <span className="text-emerald-700">เหลือสะสม: ฿{annualTuitionSurplus.toLocaleString()} / ปี</span> : <span className="text-rose-700">ขาดอีก: ฿{Math.abs(annualTuitionSurplus).toLocaleString()} / ปี</span>}
+                      </div>
+                    </div>
+                    <div className="bg-slate-50/80 border border-slate-200 p-4 rounded-2xl">
+                      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">สรุปส่วนต่างรายเดือน</h3>
+                      <table className="w-full text-xs text-left">
+                        <tbody>
+                          <tr className="border-b border-slate-200/60"><td className="py-1 text-slate-500">เงินเดือนสุทธิ:</td><td className="py-1 text-right font-bold text-slate-800">฿{netSalary.toLocaleString()}</td></tr>
+                          <tr className="border-b border-slate-200/60"><td className="py-1 text-slate-500">หักใช้จ่ายส่วนตัว:</td><td className="py-1 text-right font-semibold text-rose-600">- ฿{totalMonthlyExpenses.toLocaleString()}</td></tr>
+                          <tr className="border-b border-slate-200/60"><td className="py-1 text-slate-500">หักออมค่าเรียน:</td><td className="py-1 text-right font-semibold text-indigo-600">- ฿{selectedSaving.toLocaleString()}</td></tr>
+                          <tr><td className="py-1.5 text-slate-800 font-bold">เงินเหลือใช้จ่าย:</td><td className={`py-1.5 text-right text-sm font-black ${remainingMonthlySpending >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>฿{remainingMonthlySpending.toLocaleString()}</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Panel 5: Comparison Table */}
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5">
+                  <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2 border-b border-slate-100 pb-3 mb-4"><span className="text-indigo-600">📊</span><span>เปรียบเทียบแผนการออมทั้งหมด</span></h2>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left text-slate-600">
+                      <thead className="text-xs text-slate-500 uppercase bg-slate-50">
+                        <tr>
+                          <th className="py-2.5 px-3 rounded-l-lg font-bold">แผนออม/เดือน</th>
+                          <th className="py-2.5 px-3 font-bold text-center">ออมรวม/ปี</th>
+                          <th className="py-2.5 px-3 font-bold text-center">ความครอบคลุม</th>
+                          <th className="py-2.5 px-3 font-bold text-center">เงินเหลือ/ปี</th>
+                          <th className="py-2.5 px-3 rounded-r-lg font-bold text-right">ใช้ส่วนตัว/เดือน</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {scenarios.map(val => {
+                          const yrSavings = val * 12;
+                          const isCovered = yrSavings >= netTuitionYearly;
+                          const surplus = yrSavings - netTuitionYearly;
+                          const remSpend = netSalary - totalMonthlyExpenses - val;
+                          const isActive = selectedSaving === val;
+                          return (
+                            <tr key={val} onClick={() => setSelectedSaving(val)} className={`border-b border-slate-100 hover:bg-slate-50/80 cursor-pointer transition-all ${isActive ? 'bg-emerald-50/40 font-semibold border-l-4 border-l-emerald-600' : ''}`}>
+                              <td className="py-3 px-3"><span className="flex items-center gap-1.5">{isActive && <span className="text-emerald-600 font-extrabold">▶</span>}฿{val.toLocaleString()} / เดือน</span></td>
+                              <td className="py-3 px-3 text-center">฿{yrSavings.toLocaleString()}</td>
+                              <td className="py-3 px-3 text-center">{isCovered ? <span className="bg-emerald-100 text-emerald-800 text-xs px-2 py-0.5 rounded-full font-bold">ครอบคลุม</span> : <span className="bg-rose-100 text-rose-800 text-xs px-2 py-0.5 rounded-full font-bold">ขาดอีก ฿{Math.abs(surplus).toLocaleString()}</span>}</td>
+                              <td className={`py-3 px-3 text-center font-bold ${surplus >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>฿{surplus >= 0 ? '+' : ''}{surplus.toLocaleString()}</td>
+                              <td className={`py-3 px-3 text-right font-black ${remSpend >= 5000 ? 'text-slate-800' : 'text-rose-600'}`}>฿{remSpend.toLocaleString()}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-2 italic text-center">* คลิกที่แถวเพื่อเลือกแผน</p>
+                </div>
+              </div>
+            </div>
+          </main>
+
+          <footer className="bg-slate-900 text-slate-400 text-xs py-6 mt-12 border-t border-slate-800">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center space-y-2">
+              <p className="font-semibold text-slate-300">📊 แดชบอร์ดสรุปค่าใช้จ่าย & การวางแผนการออมค่าเทอม</p>
+              <p className="text-emerald-400 font-semibold">☁️ ข้อมูลซิงค์ผ่าน Supabase — เปิดจากเครื่องไหนก็เห็นข้อมูลเดียวกัน</p>
+              <p className="text-[11px] text-slate-500">บันทึกอัตโนมัติทุกครั้งที่มีการเปลี่ยนแปลง • ปลอดภัย • ฟรี</p>
+            </div>
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
